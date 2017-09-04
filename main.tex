@@ -5,12 +5,16 @@
 \graphicspath{ {images/} }
 \usepackage[nottoc]{tocbibind}
 \usepackage[toc, page]{appendix}
+\usepackage[acronym, toc]{glossaries}
 \setlength{\parindent}{4em}
 \setlength{\parskip}{1em}
 
 \title{Audit of SSH Client - PuTTY}
 \author{Alok Vaidya\\[1cm]{\large Supervisor: Dr. David Oswald}}
 \date{August 14, 2017}
+
+\makeglossaries
+\input{glossary.tex}
 
 \begin{document}
 
@@ -78,8 +82,79 @@ We explored the possibility of this attack being carried out on the DH modular e
 In \cite{oorschot96} the authors present a technique that can be used to recover short exponents (160-bit exponents with 1024-bit primes). To explore the possibility of this attack, we analyzed the length of the exponents used by PuTTY in its implementation. The bit-length of the exponent is dependent on the DH group in use. For DH Group 1 with 1024-bit primes, which has the lowest bit-lengths, the length of the exponent is 384 bits. For DH Group Exchange, which is the default when DH is used, wherein the client specifies to the server a minimum, a maximum and a preferred length of bits for the prime, the exponent is 544 bits. So even the shortest exponent supported by PuTTY is sufficiently long. These exponents together with safe primes, which SSH mandates, precludes the above attack.
 \chapter{Public Key Authentication Analysis}
 \chapter{Randomness Generation Analysis}
+\section{Overview}
+In this chapter we analyze the randomness generation process in PuTTY. The aim is to find the sources for the randomness and how they are used. We also subject the random numbers generated through some standard test suites and interpret the results here.
+\section{Randomness Generation Process Overview}
+PuTTY maintains a pool of size 1200 bytes of random generated data, from which it hands out bytes of data to processes that request it. This pool of data is filled at start-up from noise generated from various sources such process listings, local-time, random files on search paths and other environmental noise. A seed from a seed file that is maintained by PuTTY in the Windows Registry is also used. This process is called "heavy noise generation" and occurs only once in one invocation cycle.\par
+This generated random data then undergoes a process what PuTTY calls "Random Stir". This random stirring involves two passes of SHA (Secure Hash Algorithm) Transformation where SHA is operated in CFB (Counter Feedback) mode and the output is repeatedly fed back to the SHA digest.\par
+Random noise is generated in the background every 5 minutes and added to a buffer known as "incoming buffer". When this buffer gets full, the contents are added to another hold area called simply as "incoming" where it will be held to be used for "stirring" the pool when required.\par
+Data from this random pool is handed out to a requesting entity such as PuTTY's implementations of cryptographic primitives. PuTTY maintains a pointer to the pool and advances this pointer as it hands out random data until the pointer reaches the end of the pool at which point the pool is stirred again using noise generated so far from the environment in the incoming buffer and the pointer is reset to its starting position.\par
+\begin{figure}[ht]
+\caption{Randomness Generation Process in PuTTY}
+\centering
+\includegraphics[width=1\textwidth]{NG.png}
+\end{figure}
+\section{Random Generator Tests}
+
 \chapter{Modular Exponentiation Analysis}
+\section{Overview}
+This chapter analyzes whether an attacker, by being able to manipulate arguments passed to a modular exponentiation invocation carry out timing attacks to reveal cryptographically sensitive data values.
+\section{Modular Exponentiation Review}
+PuTTY implements a modular exponentiation operation that is invoked by implementations of primitives such as RSA, DSS, ECC and DH. We exhaustively review each of these invocations to study and analyze the source of the arguments passed to the operation with the aim to discover whether an attacker would be able to tamper with the arguments. The ability to manipulate data arguments to the modular exponentiation algorithm would give an attacker the ability to measure the slight timing differences in the runtime of the operation as a result of variable arguments.\par
+The modular exponentiation operation in PuTTY is called \textit{modpow} and is invoked with three arguments - base, exponent and the modulus. We list each invocation and analyze it here.\par
+\begin{enumerate}
+    \item \textbf {Diffie-Hellman Implementation}
+    In DH the \textit{modpow} operation is invoked twice. Once for the computation of \(e\ =\ g^a\ mod\ p\) and once for computing the shared secret \(K\ =\ f^a\ mod\ p\). While both invocations include arguments that are sourced over the network - \(g\) and \(p\) in the first and \(f\) in the second invocation - it does not make sense for an attacker to tamper these. An attacker in this case, would be acting as a man-in-the-middle between the client and the server and would have a DH shared key negotiated both with the client and the server individually. We can conclude that both these invocations are safe against possible tampering from an attacker.
+    \item \textbf {DSA (Digital Signature Algoritm) Implementation}: 
+    In DSA implementation the \textit{modpow} operation is invoked a total of four times - twice in the DSA signature verification - computing \(g^{u_1} \ mod \ p \) and \(y^{u_2}\ mod \ p\), once in DSA public key creation and once in DSA signing - computing \(g^k \ mod \ p\).\par
+        \begin{enumerate}
+        \item \textbf \underline{DSA Signature Verification}    \begin{itemize}
+            \item {\(g^{u_1} \ mod \ p \)}: Both \(g\) and \(p\) come from the DSA as negotiated parameters. \(u_1\) is computed internally from other values.
+            \item {\(y^{u_2} \ mod \ p \)}: \(y\ = \ g^x\ mod \ p\) and \(p\) comes from DSA as negotiated parameter. \(u_2\) is computed internally from other values.
+         \end{itemize}
+        The attacker cannot manipulate \textit{modpow} arguments to exploit any timing attacks.
+        \item \textbf \underline{DSA Public Key Creation}
+        \begin{itemize}
+        \item
+        The \textit{modpow} operation is called within the public key creation operation to verify \(y \ =\ g^x \ mod \ p\). Parameters \(g\) and \(p\) are DSS parameters and \(x\) is the secret exponent generated randomly internally. The attacker cannot manipulate any of these arguments to his benefit.
+        \end{itemize}
+        \item{DSA Signing}
+        \begin{itemize}
+        \item
+        Used to compute \(g^k \ mod \ p\) where \(g\) and \(p\) are DSA parameters and \(k\) is generated randomly. Since none of the parameters come from external sources the attacker cannot manipulate them.
+        \end{itemize}
+        \end{enumerate}
+    \item \textbf{ECC (Elliptic Curve Cryptography) Implementation}:
+        In the ECC implementation \textit{modpow} is used thrice, once in point verification and twice in for Edward curve.
+        \begin{enumerate}
+            \item {Point Verification}:
+            Computation of \(x^3\ mod\ p\). Parameters are either ECC parameters or are computed internally elsewhere within the calling operation.
+            \item{Edwards Curve}:
+            Both invocations for the Edwards Curve are heavily dependent on arguments that are computed elsewhere in the calling operation. No arguments have external sources.
+        \end{enumerate}
+        The attacker does not have an option to tamper with arguments to attack the \textit{modpow} operation to reveal any sensitive values.
+    \item \textbf{RSA Implementation}: For RSA implementation the \textit{modpow} operation is invoked a total of five times - once for encryption with the RSA public key, twice from within CRT (Chinese Remainder Theorem) optimization to compute the result modulo the two modulus \(p\) and \(q\), once for verifying a RSA host key for the server and lastly for encryption in RSA Key Exchange.
+        \begin{enumerate}
+            \item{RSA Encrypt}: The base is the SSH session-key, stored internally, the exponent is the key's public exponent, the modulus is the key's modulus (not secret). Since the public key is assumed to be installed safely prior to this operation, we conclude that the attacker cannot manipulate arguments for to his benefit.
+            \item{CRT Optimization}: In both the modular exponentiation calls all the arguments are sourced either from within the calling operation itself or from a calling function one level higher, but since the arguments aren't influenced by external values, the attacker as no possibility of being able to manipulate the arguments.
+            \item{Signature Verification}: This invocation of \textit{modpow} is within the RSA host key verification. Even if the attacker can manipulate the parameters to the operation such as the signature it won't be of any benefit to him as the only data that can be revealed (even if) is the signature that he himself sent us, the other parameters such as the key exponent and the modulus are public.
+            \item{RSA Key Exchange Encrypt}: All data arguments have source internal to PuTTY, so the attacker cannot tamper with the data in any way.
+         \end{enumerate}   
+\end{enumerate}    
 \chapter{Legacy Protocols Analysis}
+\section{Overview}
+In this chapter we examine legacy protocols supported by PuTTY with the aim to find any possible vulnerabilities in their implementation.
+\section{Motivation}
+Protocols that are old and aren't mainstream anymore may have vulnerabilities that are overlooked because the portion of code dealing with them is rarely used, or because such code would not be tested nearly as heavily as the code dealing with default, most commonly used protocols, or simply because a new attack makes the code vulnerable. Such protocols maye be supported just because of compatibility issues with genuine old servers. Even though these protocols aren't default, this won't stop an attacker with a malicious SSH server to make them be chosen by downgrading the list of supported protocols on his malicious server. Once these protocol is in use he can exploit any existing vulnerability.
+\clearpage
+\section{Analysis of Diffie-Hellman Group 1}
+For Key Exchange PuTTY supports DH Group 1 which is a very weak DH group of length 1024-bits. We must note that PuTTY does warn the user against selecting this protocol as is evident from the image below.
+\begin{figure}[ht]
+\caption{Warning against use of weak DH Group for Key Exchange}
+\centering
+\includegraphics[width=1\textwidth]{legacy.png}
+\end{figure}
+We traced the control flow for this protocol and reviewed the code in use. Having a 1024-bit group, it is vulnerable against nation-states adversaries against the LogJam attack \cite{adrian}.
 \chapter{Conclusions}
 \chapter{Further Work}
 \section{Overview}
@@ -110,6 +185,9 @@ Randomness Evaluation Framework of Cryptographic Algorithms,\\
 Paul C. Kocher, Timing Attacks on Implementations of Diffie-Hellman, RSA, DSS  and Other Systems. Annual International Cryptology Conference, Advances in Cryptology, CRYPTO' 96, pp 104-113
 \bibitem{oorschot96}
 On Diffie-Hellman Key Agreement with Short Exponents, Paul C. van Oorschot, Michael J. Wiener, International Conference on the Theory and Applications of Cryptographic Techniques, Advances in Cryptology — \\EUROCRYPT '96, pp 332-343
+\bibitem{adrian}
+Imperfect Forward Secrecy: How Diffie-Hellman Fails in Practice, David Adrain et al.CCS '15, Proceedings of the 22nd ACM SIGSAC Conference on Computer and Communications Security
+Pp 5-17
 \end{thebibliography}
 \listoffigures
 \end{document}
