@@ -9,7 +9,7 @@
 \setlength{\parindent}{4em}
 \setlength{\parskip}{1em}
 
-\title{Audit of SSH Client - PuTTY}
+\title {Audit of SSH Client - PuTTY}
 \author{Alok Vaidya\\[1cm]{\large Supervisor: Dr. David Oswald}}
 \date{August 14, 2017}
 
@@ -45,7 +45,7 @@ Fig. 1.1 provides an overview of the DH Key Exchange process. Once the client an
 \section{Public Key Authentication}
 A SSH server authenticates a user using either a password or a public key mechanism. When using public key authentication, the possession of a private key serves as authentication \cite{rfc4252}. The SSH client creates a signature using the user's private key. The server check whether public key is a valid authentication mechanism for the user and that the signature verifies. If both the conditions hold the access is granted. Fig. 1.2 offers an overview of the process\par
 \begin{figure}[ht]
-\caption{Exchange of messages during Public Key Authentication}
+\caption{Public Key Authentication}
 \centering
 \includegraphics[width=1\textwidth]{SSH_PK_Auth.png}
 \end{figure}
@@ -77,10 +77,38 @@ In addition to the review of the random generation code, generated stream of bit
 In this chapter we attempt a timing attack on the modular exponentiation operation involving the secret exponent for the client within the DH Key Exchange protocol.
 \section{Timing Attack on Diffie-Hellman}
 In a DH Key Exchange between a client and a server that culminates in a shared secret between the two parties, both the client and the server are required to perform a modular exponentiation operation individually with a secret exponent. This modular exponentiation operation is vulnerable to timing attacks and an attacker may be able to find the secret exponent by carefully measuring the timing required to perform operation \cite{kocher96}.\par
-We explored the possibility of this attack being carried out on the DH modular exponentiation implementation within PuTTY by reviewing the relevant code sections. Instead of using the same exponent in each invocation of the Key Exchange, a new random exponent, is generated every time. If this is so, the attack does not work \cite{kocher96}.\par
-\section{Attack on Short Exponents in Diffie-Hellman}
+We explored the possibility of this attack being carried out on the DH modular exponentiation implementation within PuTTY by reviewing the relevant code sections. Instead of using the same exponent in each invocation of the Key Exchange, a new random exponent, is generated every time. If this is so, the attack does not work \cite{kocher96}.
+\section{Attack on Short Exponents in DH}
 In \cite{oorschot96} the authors present a technique that can be used to recover short exponents (160-bit exponents with 1024-bit primes). To explore the possibility of this attack, we analyzed the length of the exponents used by PuTTY in its implementation. The bit-length of the exponent is dependent on the DH group in use. For DH Group 1 with 1024-bit primes, which has the lowest bit-lengths, the length of the exponent is 384 bits. For DH Group Exchange, which is the default when DH is used, wherein the client specifies to the server a minimum, a maximum and a preferred length of bits for the prime, the exponent is 544 bits. So even the shortest exponent supported by PuTTY is sufficiently long. These exponents together with safe primes, which SSH mandates, precludes the above attack.
 \chapter{Public Key Authentication Analysis}
+\section{Overview}
+In this chapter analyze if we are able to exploit any timing attacks within the public key signing process employed to authenticate the user using public key. The intent is to be able to reveal the user's private key.
+\section{Public Key Authentication Process}
+As mentioned in section 1.4 "Public Key Authentication", in public key authentication the possession of a private key serves as the authentication for the user. In this section we explain the process in detail and then look at the part we are most interested in i.e. the signing with the private key.\par
+\clearpage
+\begin{figure}[ht]
+\caption{Exchange of messages during Public Key Authentication}
+\centering
+\includegraphics[width=1\textwidth]{SSH_PK_Auth.png}
+\end{figure}
+The image above provides an overview of the process. The client requests the server to be allowed to use public key as an authentication mechanism. The server responds positively if the user may be allowed to use public key or negatively otherwise. On receiving a positive response the client proceeds to generate and send a signature to the server which is then verified by the server and depending on whether the verification succeeds the server grants access to the user.\par
+In the procedure explained above we focus our attention on the operation that generates a signature using the user's private key. The signature is generated over a set of data that includes - the session identifier, hex code identifying the request,user name, service name, the string \textit{public key}, a boolean value \textit{TRUE} identifying that this message contains the actual signature, public key algorithm name and the public key to be used for authentication. To be precise the signature is actually generated over a hash of the above values.
+
+\section{RSA Blinding}
+To explore the possibility of a timing attack on the public key signing operation we review the relevant code sections. The file \textit{sshrsa.c} deals with the implementation of the RSA protocol and the public key signing operation is incorporated within the function \textit{rsa2\_sign}. Reviewing the code in this function we observe that PuTTY employs RSA Blinding during the exponentiation to prevent an attacker to be able to draw any correlation between the timing of the operation and the exponent used. Remember the exponent used is the private key (the private exponent of the RSA key). This essentially safeguards against the possibility of a timing  attack. The next paragraph discusses the implementation of the blinding process and how it protects against the attack.\par
+We explain how RSA blinding is implemented and how it protects against a timing attack. Let's assume \(x\) is the base or the hash value of data to be signed, \(d\) is the private exponent of the key and \(p\) the modulus. The signature is computed thus - signature \(s\ =\ x^d\ mod\ p\). When this operation is performed by itself minor timing differences in the operation shall reveal the private exponent of the key. We generate a random, say \(y\) and instead of computing  \(x^d\ mod\ p\) we compute \((x*y)^d\ mod\ p\). Note that, \((x*y)^d\ mod\ p\) = (\(x^d\ mod\ p\)) * (\(y^d\ mod\ p\)). Hence, we instead compute the signature thus \(s\ =\ ((x*y)^d\ mod\ p\))/(\(y^d\ mod\ p\)). The benefit this has is that because the attacker has no knowledge of either \(x\) or \(y\) (y is generated randomly using sound randomness), he is unable to correlate the timing of the operation with the value of \(x\) which precludes the timing attack. Please note there have been attacks developed quite recently that can still work even if the software employs RSA blinding. These attacks are termed as the "Cross corelation Attack". Please refer section 9.4 "Cross-corelation Attack" \cite{praveen} of chapter 9 "Further Work".
+\section{Random Generation for Blinding}
+The random number (\(y\) in above), does not come from the Random Pool maintained as a main source of randomness by PuTTY. Instead the random for the blinding process is generated by hashing different values with the private key.\par
+The process begins by choosing a number of the length of the modulus, the position of the top most set bit is found and then randomly setting bits downwards from that bit. Then PuTTY proceeds to hash different things with initial value, lastly the private exponent of the key is hashed with it.\par
+The random is chosen uniformly from the range 2-modulus-1. If the random to be chosen is greater than the modulus then a new random computed instead of just reducing the random computed to mod \(n\), to avoid any Bleichenbacher-like attacks making use of the uneven distribution within the said range that would arise from just reducing the number mod \(n\).
+\section{An Artificial Attack}
+We seek to know whether a timing attack is possible on the signing operation even without the blinding employed. To explore this, we first amend the source code to completely strip off the blinding. In addition to stripping off the blinding code, we also comment out the code for the random generation. In effect we are reverting the code back to performing the simple computation for the signature \(s\ =\ x^d\ mod\ p\).\par
+We explore the possibility of applying the attack from \cite{brumley} on the public key signing process after removal of the blinding code. The paper discusses remote attacks on RSA decryption in OpenSSL\footnote{\url{https://www.openssl.org/}}. Decryption is performed by the private exponent of the key as is the signing (our case). PuTTY, like OpenSSL, uses Chinese Remainder Theorem (CRT) to perform the exponentiation for the signing process. Using CRT the exponentiation \(s\ =\ x^d\ mod\ p\) is computed in two steps, first evaluate \(s_1\ =\ x^\{d_1\} \ mod\ p_1\) and \(s_2\ =\ x^\{d_2\} \ mod\ p_2\) (Here, \(p\ =\ p_1\ *\ p_2\) and \(d_1\ and\ d_2\) are pre-computed from \(d\)), second to combine \(s_1\) and \(s_2\) using CRT to get \(s\). A timing attack can expose the factors \(p_1\) and \(p_2\). Revealing the factors effectively reveals the private exponent \(d\) (\(d\ =\ e^\{-1\}\ mod\ (\{p_1\}\ -\ 1 )\ (\{p_2\}\ -\ 1)\) , \(e\) is the public exponent of the key). \par
+The authors in \cite{brumley} mention two different sources of timing differences originating in the modular exponentiation process. The first difference in timing arises from the use of Karatsuba or ordinary multiplication for multiplication in the exponentiation operation. Karatsuba being faster runs in shorter time. The second difference originates from what is called as an "Extra Reduction" at the end of Montgomery reduction. Montgomery reduction transforms a reduction modulo \(p\) (the modulus) into a reduction modulo some power of 2 which can be efficiently implemented as a series of operations in hardware. At the end of the reduction the final result is checked to see if it is greater than the modulus \(p\). If it is than the result is reduced modulo \(p\) to ensure the result is in the range [\(0\ -\ q\)). This step is named as the "Extra Reduction" and causes timing differences in different inputs. The probability that an Extra Reduction will be required increases as the base \(x\) approaches the modulus \(p\) from below, at values of \(x\) that are multiples of \(p\) the probability drops sharply to zero. If the timing measurements are recorded onto a graph the increasing time for the operation  as \(x\) approaches \(p\) from below followed by sharp drops at \(x\) equal multiples of \(p\), form peaks on the graph that help us make estimations at the values of \(p\). We can then by making educated manipulations to the value of \(x\) figure bits of \(p\).
+\section{PuTTY's Exponentiation Implementation}
+To explore the possibility of carrying out this attack on PuTTY's implementation, we begin by reviewing implementation of the exponentiation operation. We investigate whether the two above mentioned sources of timing differences do indeed exist in PuTTY's implementation. If they do we can proceed to perform a similar attack from \cite{brumley}.\par
+PuTTY implements both the Karatsuba and the ordinary multiplication algorithm for performing the multiplications resulting from the exponentiation. Though it exercises a  threshold on the size of the modulus of the exponentiation to decide whether or not Karatsuba should be used. This threshold defined in the file \textit{sshbn.c} is 50 words (50 * 32 = 1600 bits on 32-bit platforms and 3200 bits on 64-bit platforms). If the modulus is smaller than 50 words ordinary multiplication algorithm is used. With CRT in use this threshold restriction applies not to the original modulus but to \(p_1\) and \(p_2\), the moduli that apply to the two split exponentiations performed by CRT, remember \(p\) = \(p_1\) * \(p_2\). Since the most common bit-length for an RSA key modulus is 2048, the factors \(p_1\) and \(p_2\) are typically half the size or 1024 bits in length. Even with a 3072-bit modulus for RSA, the factors are typically 1536 bits in length. As a result PuTTY almost always ends up using only the ordinary multiplication algorithm and almost never using Karatsuba. This results in one of the sources of timing differences as identified in \cite{brumley} not being so in PuTTY.\par
+
 \chapter{Randomness Generation Analysis}
 \section{Overview}
 In this chapter we analyze the randomness generation process in PuTTY. The aim is to find the sources for the randomness and how they are used. We also subject the random numbers generated through some standard test suites and interpret the results here.
@@ -102,6 +130,7 @@ This chapter analyzes whether an attacker, by being able to manipulate arguments
 \section{Modular Exponentiation Review}
 PuTTY implements a modular exponentiation operation that is invoked by implementations of primitives such as RSA, DSS, ECC and DH. We exhaustively review each of these invocations to study and analyze the source of the arguments passed to the operation with the aim to discover whether an attacker would be able to tamper with the arguments. The ability to manipulate data arguments to the modular exponentiation algorithm would give an attacker the ability to measure the slight timing differences in the runtime of the operation as a result of variable arguments.\par
 The modular exponentiation operation in PuTTY is called \textit{modpow} and is invoked with three arguments - base, exponent and the modulus. We list each invocation and analyze it here.\par
+\clearpage
 \begin{enumerate}
     \item \textbf {Diffie-Hellman Implementation}
     In DH the \textit{modpow} operation is invoked twice. Once for the computation of \(e\ =\ g^a\ mod\ p\) and once for computing the shared secret \(K\ =\ f^a\ mod\ p\). While both invocations include arguments that are sourced over the network - \(g\) and \(p\) in the first and \(f\) in the second invocation - it does not make sense for an attacker to tamper these. An attacker in this case, would be acting as a man-in-the-middle between the client and the server and would have a DH shared key negotiated both with the client and the server individually. We can conclude that both these invocations are safe against possible tampering from an attacker.
@@ -145,16 +174,17 @@ The modular exponentiation operation in PuTTY is called \textit{modpow} and is i
 \section{Overview}
 In this chapter we examine legacy protocols supported by PuTTY with the aim to find any possible vulnerabilities in their implementation.
 \section{Motivation}
-Protocols that are old and aren't mainstream anymore may have vulnerabilities that are overlooked because the portion of code dealing with them is rarely used, or because such code would not be tested nearly as heavily as the code dealing with default, most commonly used protocols, or simply because a new attack makes the code vulnerable. Such protocols maye be supported just because of compatibility issues with genuine old servers. Even though these protocols aren't default, this won't stop an attacker with a malicious SSH server to make them be chosen by downgrading the list of supported protocols on his malicious server. Once these protocol is in use he can exploit any existing vulnerability.
+Protocols that are old and aren't mainstream anymore may have vulnerabilities that are overlooked because the portion of code dealing with them is rarely used, or because such code would not be tested nearly as heavily as the code dealing with default, most commonly used protocols, or simply because a new attack makes the code vulnerable. Such protocols maye be supported just because of compatibility issues with genuine old servers. Even though these protocols aren't default, this won't stop an attacker with a malicious SSH server to make them be chosen by downgrading the list of supported protocols on his malicious server. Once the protocol is in use he can exploit any existing vulnerability.
 \clearpage
 \section{Analysis of Diffie-Hellman Group 1}
-For Key Exchange PuTTY supports DH Group 1 which is a very weak DH group of length 1024-bits. We must note that PuTTY does warn the user against selecting this protocol as is evident from the image below.
+For Key Exchange PuTTY supports DH Group 1 which is a very weak DH group of 1024-bits. We must note that PuTTY does warn the user against selecting this protocol as is evident from the image below.
 \begin{figure}[ht]
 \caption{Warning against use of weak DH Group for Key Exchange}
 \centering
 \includegraphics[width=1\textwidth]{legacy.png}
 \end{figure}
-We traced the control flow for this protocol and reviewed the code in use. Having a 1024-bit group, it is vulnerable against nation-states adversaries against the LogJam attack \cite{adrian}.
+We traced the control flow for this protocol and reviewed the code in use. Having a 1024-bit group, it is vulnerable against nation-states adversaries against the LogJam attack \cite{adrian}. This, understandably is not a vulnerability in PuTTY. The secret exponent (client's secret) under this group is significantly shorter (384-bits) than the typical value (544-bits). Upon inspection though we find that the code segment used is the same as that for higher stronger groups. Only difference apparently is that DH is initialized with smaller values for the prime \(p\) which affects \(q\) which in turn affects the secret exponent \(x\) which is as mentioned above significantly shorter. \par
+Since the instruction set essentially remains the same as that for any DH group, this group is not exposed to any vulnerabilities just on account of being a legacy, rarely used protocol. It should exibit the same cryptographic security properties as any DH implementation. Thus we can conclude that the support of weaker protocols for the Key Exchange does not make PuTTY insecure by itself.
 \chapter{Conclusions}
 \chapter{Further Work}
 \section{Overview}
@@ -185,9 +215,13 @@ Randomness Evaluation Framework of Cryptographic Algorithms,\\
 Paul C. Kocher, Timing Attacks on Implementations of Diffie-Hellman, RSA, DSS  and Other Systems. Annual International Cryptology Conference, Advances in Cryptology, CRYPTO' 96, pp 104-113
 \bibitem{oorschot96}
 On Diffie-Hellman Key Agreement with Short Exponents, Paul C. van Oorschot, Michael J. Wiener, International Conference on the Theory and Applications of Cryptographic Techniques, Advances in Cryptology — \\EUROCRYPT '96, pp 332-343
+\bibitem{praveen}
+Attacking OpenSSL using Side-channel Attacks: the RSA case study, Praveen Kumar Vadnala,Lukasz Chmielewski
+\bibitem{brumley}
+Remote Timing Attacks are Practical, David Brumley, Dan Boneh, Computer Networks, Volume 48, Issue 5, 5 August 2005, Pages 701-716
 \bibitem{adrian}
 Imperfect Forward Secrecy: How Diffie-Hellman Fails in Practice, David Adrain et al.CCS '15, Proceedings of the 22nd ACM SIGSAC Conference on Computer and Communications Security
-Pp 5-17
+pp 5-17
 \end{thebibliography}
 \listoffigures
 \end{document}
